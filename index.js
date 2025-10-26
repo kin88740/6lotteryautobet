@@ -36,7 +36,7 @@ let allowedsixuserid = new Set();
 let patterns = {};
 let dreamPatterns = {};
 
-//  bot started နဲ့ Logged in userတွေကိုcheckလုပ်
+// Track users who /start the bot and logged in user
 const activeUsers = new Set();
 
 async function makeRequest(url, options = {}) {
@@ -173,7 +173,6 @@ function numberToBS(num) {
   return num >= 5 ? 'B' : 'S';
 }
 
-
 // Load patterns for Lyzo strategy
 function loadPatterns() {
   try {
@@ -230,7 +229,7 @@ function loadDreamPatterns() {
   }
 }
 
-// Babio Strategy (Dream V2 renamed)
+// FIXED: Babio Strategy without random betting
 async function getBabioPrediction(userId, gameType) {
   try {
     if (!userAILast10Results[userId]) {
@@ -242,20 +241,16 @@ async function getBabioPrediction(userId, gameType) {
     
     userAIRoundCount[userId]++;
     
-    if (userAIRoundCount[userId] <= 10) {
-      const randomPrediction = Math.random() < 0.5 ? 'B' : 'S';
-      logging.info(`Babio: Round ${userAIRoundCount[userId]} - Random (${randomPrediction})`);
-      return { result: randomPrediction, percent: '50.0' };
+    // Always use available results, no random betting
+    if (userAILast10Results[userId].length === 0) {
+      // If no results, default to B
+      logging.info(`Babio: No results available, defaulting to B`);
+      return { result: 'B', percent: '50.0' };
     }
     
-    if (userAILast10Results[userId].length < 10) {
-      const randomPrediction = Math.random() < 0.5 ? 'B' : 'S';
-      logging.info(`Babio: Not enough results (${userAILast10Results[userId].length}), using random (${randomPrediction})`);
-      return { result: randomPrediction, percent: '50.0' };
-    }
-    
-    const lastTenResults = userAILast10Results[userId].slice(-10);
-    logging.debug(`Babio: Last 10 results: ${lastTenResults.join(', ')}`);
+    // Use the most recent results available
+    const availableResults = userAILast10Results[userId].slice(-10);
+    logging.debug(`Babio: Available results: ${availableResults.join(', ')}`);
     
     const settings = userSettings[userId] || {};
     
@@ -269,19 +264,25 @@ async function getBabioPrediction(userId, gameType) {
     const babioState = settings.babio_state;
     let prediction;
     
-    if (babioState.current_position === 8) {
-      prediction = lastTenResults[7];
+    // If we have at least 8 results, use the 8th position
+    if (availableResults.length >= 8) {
+      prediction = availableResults[7];
       logging.info(`Babio: Using 8th position result: ${prediction}`);
-    } else {
-      prediction = lastTenResults[4];
+    } else if (availableResults.length >= 5) {
+      // If we have at least 5 results, use the 5th position
+      prediction = availableResults[4];
       logging.info(`Babio: Using 5th position result: ${prediction}`);
+    } else {
+      // Otherwise, use the last result
+      prediction = availableResults[availableResults.length - 1];
+      logging.info(`Babio: Using last result: ${prediction}`);
     }
     
     return { result: prediction, percent: 'N/A' };
   } catch (error) {
     logging.error(`Error getting Babio prediction: ${error}`);
-    const randomPrediction = Math.random() < 0.5 ? 'B' : 'S';
-    return { result: randomPrediction, percent: '50.0' };
+    // Instead of random, default to B
+    return { result: 'B', percent: '50.0' };
   }
 }
 
@@ -343,7 +344,96 @@ function getAlinkarPrediction(userId) {
   }
 }
 
-// Ai prediction
+// FIXED: MAY BARANI Strategy without random betting
+async function getMayBaraniPrediction(userId) {
+  try {
+    if (!userAllResults[userId]) {
+      userAllResults[userId] = [];
+    }
+    
+    // Always use available results, no random betting
+    if (userAllResults[userId].length === 0) {
+      // If no results, default to B
+      logging.info(`MAY BARANI: No results available, defaulting to B`);
+      return 'B';
+    }
+    
+    // Need at least 5 results to calculate
+    if (userAllResults[userId].length < 5) {
+      // If we don't have 5 results yet, use the most recent result
+      const lastResult = userAllResults[userId][userAllResults[userId].length - 1];
+      logging.info(`MAY BARANI: Not enough results (${userAllResults[userId].length}), using last result: ${lastResult}`);
+      return lastResult;
+    }
+    
+    // Get the latest 5 results (from top to bottom as described)
+    const latest5Results = userAllResults[userId].slice(-5);
+    logging.debug(`MAY BARANI: Latest 5 results: ${latest5Results.join(', ')}`);
+    
+    // Convert B/S to numbers (B=5-9, S=0-4)
+    // For calculation, we'll use middle values: B=7, S=2
+    const numericResults = latest5Results.map(result => result === 'B' ? 7 : 2);
+    
+    // Sum the latest 5 results
+    const sum = numericResults.reduce((acc, val) => acc + val, 0);
+    logging.info(`MAY BARANI: Sum of latest 5 results: ${sum}`);
+    
+    // Subtract the remaining results (if any)
+    let remainingSum = 0;
+    if (userAllResults[userId].length > 5) {
+      const remainingResults = userAllResults[userId].slice(0, -5);
+      const numericRemaining = remainingResults.map(result => result === 'B' ? 7 : 2);
+      remainingSum = numericRemaining.reduce((acc, val) => acc + val, 0);
+      logging.info(`MAY BARANI: Sum of remaining results: ${remainingSum}`);
+    }
+    
+    // Calculate final result
+    let finalResult = sum - remainingSum;
+    logging.info(`MAY BARANI: Final calculation: ${sum} - ${remainingSum} = ${finalResult}`);
+    
+    // Ignore negative sign
+    finalResult = Math.abs(finalResult);
+    logging.info(`MAY BARANI: Absolute value: ${finalResult}`);
+    
+    // If 2 digits, use only the last digit
+    if (finalResult >= 10) {
+      finalResult = finalResult % 10;
+      logging.info(`MAY BARANI: Last digit of 2-digit number: ${finalResult}`);
+    }
+    
+    // Determine bet based on the rules
+    let prediction;
+    const isTwoDigitCalculation = (sum - remainingSum) >= 10;
+    
+    if (isTwoDigitCalculation) {
+      // Two-digit calculation result - bet opposite
+      if (finalResult >= 5) {
+        prediction = 'S'; // Opposite of Big
+        logging.info(`MAY BARANI: Two-digit result ${finalResult} >= 5, betting Small (opposite)`);
+      } else {
+        prediction = 'B'; // Opposite of Small
+        logging.info(`MAY BARANI: Two-digit result ${finalResult} < 5, betting Big (opposite)`);
+      }
+    } else {
+      // Single-digit calculation result - bet same
+      if (finalResult >= 5) {
+        prediction = 'B'; // Same as Big
+        logging.info(`MAY BARANI: Single-digit result ${finalResult} >= 5, betting Big (same)`);
+      } else {
+        prediction = 'S'; // Same as Small
+        logging.info(`MAY BARANI: Single-digit result ${finalResult} < 5, betting Small (same)`);
+      }
+    }
+    
+    return prediction;
+  } catch (error) {
+    logging.error(`Error getting MAY BARANI prediction: ${error}`);
+    // Instead of random, default to B
+    return 'B';
+  }
+}
+
+// FIXED: AI Prediction strategy without random betting
 async function getAIPrediction(userId, gameType) {
   try {
     if (!userAILast10Results[userId]) {
@@ -355,34 +445,34 @@ async function getAIPrediction(userId, gameType) {
     
     userAIRoundCount[userId]++;
     
-    if (userAIRoundCount[userId] <= 10) {
-      const randomPrediction = Math.random() < 0.5 ? 'B' : 'S';
-      logging.info(`AI Prediction: Round ${userAIRoundCount[userId]} - Random (${randomPrediction})`);
-      return { result: randomPrediction, percent: '50.0' };
+    // Always use available results, no random betting
+    if (userAILast10Results[userId].length === 0) {
+      // If no results, default to B
+      logging.info(`AI Prediction: No results available, defaulting to B`);
+      return { result: 'B', percent: '50.0' };
     }
     
-    if (userAILast10Results[userId].length < MIN_AI_PREDICTION_DATA) {
-      const randomPrediction = Math.random() < 0.5 ? 'B' : 'S';
-      logging.info(`AI Prediction: Not enough results (${userAILast10Results[userId].length}), using random (${randomPrediction})`);
-      return { result: randomPrediction, percent: '50.0' };
+    // Use the most recent results available
+    const availableResults = userAILast10Results[userId].slice(-10);
+    logging.debug(`AI Prediction: Available results: ${availableResults.join(', ')}`);
+    
+    // Check for patterns in the available results
+    if (availableResults.length >= 3) {
+      const lastThree = availableResults.slice(-3).join('');
+      
+      if (lastThree === 'BBB') {
+        logging.info(`AI Prediction: S (based on BBB pattern)`);
+        return { result: 'S', percent: '70.0' };
+      } else if (lastThree === 'SSS') {
+        logging.info(`AI Prediction: B (based on SSS pattern)`);
+        return { result: 'B', percent: '70.0' };
+      }
     }
     
-    const lastTenResults = userAILast10Results[userId].slice(-10);
-    logging.debug(`AI Prediction: Last 10 results: ${lastTenResults.join(', ')}`);
-    
+    // Count the frequency of B and S in the available results
     const counts = { B: 0, S: 0 };
-    for (const result of lastTenResults) {
+    for (const result of availableResults) {
       counts[result]++;
-    }
-    
-    const lastThree = lastTenResults.slice(-3).join('');
-    
-    if (lastThree === 'BBB') {
-      logging.info(`AI Prediction: S (based on BBB pattern)`);
-      return { result: 'S', percent: '70.0' };
-    } else if (lastThree === 'SSS') {
-      logging.info(`AI Prediction: B (based on SSS pattern)`);
-      return { result: 'B', percent: '70.0' };
     }
     
     let prediction;
@@ -393,8 +483,9 @@ async function getAIPrediction(userId, gameType) {
       prediction = 'S';
       logging.info(`AI Prediction: S (S appeared ${counts.S} times, B appeared ${counts.B} times)`);
     } else {
-      prediction = Math.random() < 0.5 ? 'B' : 'S';
-      logging.info(`AI Prediction: Random (${prediction}) due to tie (B: ${counts.B}, S: ${counts.S})`);
+      // If tied, use the last result
+      prediction = availableResults[availableResults.length - 1];
+      logging.info(`AI Prediction: Using last result (${prediction}) due to tie (B: ${counts.B}, S: ${counts.S})`);
     }
     
     const diff = Math.abs(counts.B - counts.S);
@@ -404,17 +495,26 @@ async function getAIPrediction(userId, gameType) {
     return { result: prediction, percent };
   } catch (error) {
     logging.error(`Error getting AI prediction: ${error}`);
-    const randomPrediction = Math.random() < 0.5 ? 'B' : 'S';
-    return { result: randomPrediction, percent: '50.0' };
+    // Instead of random, default to B
+    return { result: 'B', percent: '50.0' };
   }
 }
 
-// Lyzo 
+// FIXED: Lyzo strategy without random betting
 async function getLyzoPrediction(userId, gameType) {
   try {
     if (Object.keys(patterns).length === 0) {
       logging.warning("No patterns loaded for Lyzo strategy");
-      return null;
+      // Instead of random, use a deterministic approach based on last result
+      if (!userLast10Results[userId] || userLast10Results[userId].length === 0) {
+        // If no results, default to B
+        logging.info(`Lyzo: No results available, defaulting to B`);
+        return { result: 'B', percent: '50.0' };
+      }
+      // Use the last result
+      const lastResult = userLast10Results[userId][userLast10Results[userId].length - 1];
+      logging.info(`Lyzo: Using last result as prediction: ${lastResult}`);
+      return { result: lastResult, percent: '50.0' };
     }
   
     if (!userLast10Results[userId]) {
@@ -426,16 +526,18 @@ async function getLyzoPrediction(userId, gameType) {
     
     userLyzoRoundCount[userId]++;
     
-    if (userLyzoRoundCount[userId] <= 10) {
-      const randomPrediction = Math.random() < 0.5 ? 'B' : 'S';
-      logging.info(`Lyzo Prediction: Round ${userLyzoRoundCount[userId]} - Random (${randomPrediction})`);
-      return { result: randomPrediction, percent: '50.0' };
-    }
-    
-    if (userLast10Results[userId].length < MIN_LYZO_PREDICTION_DATA) {
-      const randomPrediction = Math.random() < 0.5 ? 'B' : 'S';
-      logging.info(`Lyzo Prediction: Not enough results (${userLast10Results[userId].length}), using random (${randomPrediction})`);
-      return { result: randomPrediction, percent: '50.0' };
+    // Always use pattern matching, no random betting
+    if (userLast10Results[userId].length < 10) {
+      // If we don't have 10 results yet, use the most recent result
+      if (userLast10Results[userId].length > 0) {
+        const lastResult = userLast10Results[userId][userLast10Results[userId].length - 1];
+        logging.info(`Lyzo: Not enough results (${userLast10Results[userId].length}), using last result: ${lastResult}`);
+        return { result: lastResult, percent: '50.0' };
+      } else {
+        // If no results at all, default to B
+        logging.info(`Lyzo: No results available, defaulting to B`);
+        return { result: 'B', percent: '50.0' };
+      }
     }
     
     const lastTenResults = userLast10Results[userId].slice(-10);
@@ -450,15 +552,31 @@ async function getLyzoPrediction(userId, gameType) {
       logging.info(`Lyzo Prediction: ${prediction} (matched pattern: ${patternString})`);
       return { result: prediction, percent: 'N/A' };
     } else {
-      logging.debug(`No matching pattern found for: ${patternString}`);
-      const randomPrediction = Math.random() < 0.5 ? 'B' : 'S';
-      logging.info(`Lyzo Prediction: Random (${randomPrediction}) because no pattern matched`);
-      return { result: randomPrediction, percent: '50.0' };
+      // Instead of random, use a deterministic approach
+      // Count the frequency of B and S in the last 10 results
+      const counts = { B: 0, S: 0 };
+      for (const result of lastTenResults) {
+        counts[result]++;
+      }
+      
+      // Use the more frequent result, or B if tied
+      let deterministicPrediction;
+      if (counts.B > counts.S) {
+        deterministicPrediction = 'B';
+      } else if (counts.S > counts.B) {
+        deterministicPrediction = 'S';
+      } else {
+        // If tied, use the last result
+        deterministicPrediction = lastTenResults[lastTenResults.length - 1];
+      }
+      
+      logging.info(`Lyzo Prediction: ${deterministicPrediction} (no pattern matched, using deterministic approach)`);
+      return { result: deterministicPrediction, percent: '50.0' };
     }
   } catch (error) {
     logging.error(`Error getting Lyzo prediction: ${error}`);
-    const randomPrediction = Math.random() < 0.5 ? 'B' : 'S';
-    return { result: randomPrediction, percent: '50.0' };
+    // Instead of random, default to B
+    return { result: 'B', percent: '50.0' };
   }
 }
 
@@ -605,8 +723,8 @@ function updateBettingStrategy(settings, isWin, betAmount) {
 // error handle 
 async function loginRequest(phone, password) {
   const body = {
-    "phonetype": -1,
-    "language": 0,
+    "phonetype": 1,
+    "language": 7,
     "logintype": "mobile",
     "random": "70e85c7beb864e36b598a95cf290d692",
     "username": "95" + phone,
@@ -651,7 +769,7 @@ async function loginRequest(phone, password) {
 
 async function getUserInfo(session, userId) {
   const body = {
-    "language": 0,
+    "language": 7,
     "random": "4fc9f8f8d6764a5f934d4c6a468644e0"
   };
   body.signature = signMd5Original(body).toUpperCase();
@@ -683,7 +801,7 @@ async function getUserInfo(session, userId) {
 
 async function getBalance(session, userId) {
   const body = {
-    "language": 0,
+    "language": 7,
     "random": "71ebd56cff7d4679971c482807c33f6f"
   };
   body.signature = signMd5Original(body).toUpperCase();
@@ -719,17 +837,28 @@ async function getBalance(session, userId) {
 }
 
 async function getGameIssueRequest(session, gameType) {
+  let typeId, endpoint;
+  
+  if (gameType === "TRX") {
+    typeId = 13;
+    endpoint = "GetTrxGameIssue";
+  } else if (gameType === "WINGO_30S") {
+    typeId = 30; // Wingo 30s 
+    endpoint = "GetGameIssue"; // Use Wingo endpoint
+  } else {
+    typeId = 1; // WINGO 1min
+    endpoint = "GetGameIssue";
+  }
+  
   const body = {
-    "typeId": gameType === "TRX" ? 13 : 1,
-    "language": 0,
+    "typeId": typeId,
+    "language": 7,
     "random": "7d76f361dc5d4d8c98098ae3d48ef7af"
   };
   body.signature = signMd5(body).toUpperCase();
   body.timestamp = Math.floor(Date.now() / 1000);
   
-  const endpoint = gameType === "TRX" ? "GetTrxGameIssue" : "GetGameIssue";
-  
-  const maxRetries = gameType === "TRX" ? 3 : 1;
+  const maxRetries = 3;
   const retryDelay = 2000; // 2 seconds
   
   for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -764,10 +893,23 @@ async function getGameIssueRequest(session, gameType) {
 }
 
 async function placeBetRequest(session, issueNumber, selectType, unitAmount, betCount, gameType, userId) {
+  let typeId, endpoint;
+  
+  if (gameType === "TRX") {
+    typeId = 13;
+    endpoint = "GameTrxBetting";
+  } else if (gameType === "WINGO_30S") {
+    typeId = 30; // Wingo 30s
+    endpoint = "GameBetting"; // Use Wingo endpoint
+  } else {
+    typeId = 1; //  WINGO 1min
+    endpoint = "GameBetting";
+  }
+  
   const betBody = {
-    "typeId": gameType === "TRX" ? 13 : 1,
+    "typeId": typeId,
     "issuenumber": issueNumber,
-    "language": 0,
+    "language": 7,
     "gameType": 2,
     "amount": unitAmount,
     "betCount": betCount,
@@ -776,7 +918,6 @@ async function placeBetRequest(session, issueNumber, selectType, unitAmount, bet
   };
   betBody.signature = signMd5Original(betBody).toUpperCase();
   betBody.timestamp = Math.floor(Date.now() / 1000);
-  const endpoint = gameType === "TRX" ? "GameTrxBetting" : "GameBetting";
   
   for (let attempt = 0; attempt < MAX_BET_RETRIES; attempt++) {
     try {
@@ -797,59 +938,49 @@ async function placeBetRequest(session, issueNumber, selectType, unitAmount, bet
   return { error: "Failed after retries" };
 }
 
-// WINGO API 
-async function getNoaverageEmerdListRequest(session) {
-  const body = {
-    "pageSize": 10,
-    "typeId": 1,
-    "language": 0,
-    "random": "4c7f7cd37fe848c285fba4f615729301",
-    "signature": "9D0671DFA7B8C6B1425C1A7461936D43",
-    "timestamp": Math.floor(Date.now() / 1000)
-  };
+// FIXED: Enhanced function to get Wingo game results with proper signature generation
+async function getWingoGameResults(session, gameType = "WINGO") {
+  let typeId;
   
-  const headers = {
-    "Content-Type": "application/json"
-  };
-  
-  try {
-    const response = await makeRequest("https://6lotteryapi.com/api/webapi/GetNoaverageEmerdList", {
-      method: 'POST',
-      headers: headers,
-      body: body
-    });
-    
-    // Removed detailed logging of emerdlist as requested
-    logging.info(`Emerd list request for Wingo completed`);
-    return response.data;
-  } catch (error) {
-    logging.error(`Emerd list error for Wingo: ${error.message}`);
-    return { error: error.message };
+  if (gameType === "WINGO_30S") {
+    typeId = 30; // Wingo 30s
+  } else {
+    typeId = 1; //  WINGO 1min
   }
-}
-
-async function getGameHistory(session) {
+  
   const body = {
     "pageSize": 10,
-    "typeId": 1,
-    "language": 0,
-    "random": "4c7f7cd37fe848c285fba4f615729301"
+    "pageNo": 1,
+    "typeId": typeId,
+    "language": 7,
+    "random": "4ad5325e389745a882f4189ed6550e70"
   };
-  body.signature = signMd5Original(body).toUpperCase();
-  body.timestamp = Math.floor(Date.now() / 1000);
+  
+  // FIXED: Use the correct signature format for WINGO_30S
+  if (gameType === "WINGO_30S") {
+    body.signature = "5483D466A138F08B6704354BAA7E7FB3";
+    body.timestamp = 1761247150;
+  } else {
+    // For regular WINGO, use the original signature generation
+    body.signature = signMd5Original(body).toUpperCase();
+    body.timestamp = Math.floor(Date.now() / 1000);
+  }
   
   try {
     const response = await session.post("GetNoaverageEmerdList", body);
-    const data = response.data?.list || [];
-    logging.debug(`Game history response: ${data.length} records retrieved`);
+    const data = response.data;
     
-    const validData = data.filter(item => item && item.number !== undefined && item.number !== null);
-    logging.debug(`Game history valid records: ${validData.length} out of ${data.length}`);
-    
-    return validData;
+    // Debug logging to verify we're getting 10 results
+    if (data && data.code === 0 && data.data && data.data.list) {
+      logging.info(`Successfully fetched ${data.data.list.length} results for ${gameType}`);
+      return data;
+    } else {
+      logging.error(`Failed to get ${gameType} results: ${data?.msg || 'Unknown error'}`);
+      return data;
+    }
   } catch (error) {
-    logging.error(`Error fetching game history: ${error.message}`);
-    return [];
+    logging.error(`Error getting ${gameType} results: ${error.message}`);
+    return { error: error.message };
   }
 }
 
@@ -1020,7 +1151,7 @@ async function checkProfitAndStopLoss(userId, bot) {
   return false;
 }
 
-// Win/lose checker with improved SL layer logic (modified for Leslay strategy)
+// FIXED: Enhanced win/lose checker with improved WINGO_30S handling
 async function winLoseChecker(bot) {
   logging.info("Win/lose checker started");
   while (true) {
@@ -1028,27 +1159,98 @@ async function winLoseChecker(bot) {
       for (const [userId, session] of Object.entries(userSessions)) {
         if (!session) continue;
         const settings = userSettings[userId] || {};
-        const gameType = settings.game_type || "WINGO";
+        const gameType = settings.game_type || "TRX"; // Get game type from settings
         const isLeslayStrategy = settings.strategy === "SNIPER";
         
-        let issueRes;
-        if (gameType === "WINGO") {
-          issueRes = await getNoaverageEmerdListRequest(session);
+        let data;
+        
+        if (gameType === "WINGO" || gameType === "WINGO_30S") {
+          // Get Wingo results (for both 1min and 30s)
+          const wingoRes = await getWingoGameResults(session, gameType);
+          if (!wingoRes || wingoRes.code !== 0) {
+            logging.error(`Failed to get ${gameType} results: ${wingoRes?.msg || 'Unknown error'}`);
+            continue;
+          }
+          data = wingoRes.data?.list || [];
+          
+          // FIXED: Ensure we have 10 results for strategies
+          if (data.length < 10) {
+            logging.warning(`Only ${data.length} results available for ${gameType}, expected 10`);
+          }
+          
+          // FIXED: Debug logging for WINGO_30S
+          if (gameType === "WINGO_30S") {
+            logging.debug(`WINGO_30S: Retrieved ${data.length} results`);
+            if (data.length > 0) {
+              logging.debug(`WINGO_30S: First result issueNumber: ${data[0].issueNumber}, number: ${data[0].number}`);
+            }
+          }
         } else {
-          issueRes = await getGameIssueRequest(session, gameType);
+          // Get TRX results
+          let issueRes = await getGameIssueRequest(session, gameType);
+          
+          if (!issueRes || issueRes.code !== 0) {
+            continue;
+          }
+          
+          data = issueRes.data ? [issueRes.data.settled || {}] : [];
         }
         
-        if (!issueRes || issueRes.code !== 0) {
-          continue;
+        // Store all 10 results for strategies that need historical data
+        if (gameType === "WINGO" || gameType === "WINGO_30S") {
+          // Initialize result arrays if they don't exist
+          if (!userAILast10Results[userId]) userAILast10Results[userId] = [];
+          if (!userLast10Results[userId]) userLast10Results[userId] = [];
+          if (!userAllResults[userId]) userAllResults[userId] = [];
+          
+          // Process each result to ensure we have 10 for every period
+          for (let i = 0; i < Math.min(data.length, 10); i++) {
+            const result = data[i];
+            if (result && result.number) {
+              const number = parseInt(result.number || "0") % 10;
+              const bigSmall = number >= 5 ? "B" : "S";
+              
+              // Store for AI strategy
+              if (settings.strategy === "AI_PREDICTION" || settings.strategy === "BABIO") {
+                if (!userAILast10Results[userId].includes(bigSmall)) {
+                  userAILast10Results[userId].push(bigSmall);
+                  if (userAILast10Results[userId].length > 10) {
+                    userAILast10Results[userId] = userAILast10Results[userId].slice(-10);
+                  }
+                }
+              }
+              
+              // Store for Lyzo strategy
+              if (settings.strategy === "LYZO") {
+                if (!userLast10Results[userId].includes(bigSmall)) {
+                  userLast10Results[userId].push(bigSmall);
+                  if (userLast10Results[userId].length > 10) {
+                    userLast10Results[userId] = userLast10Results[userId].slice(-10);
+                  }
+                }
+              }
+              
+              // Store for all strategies
+              if (!userAllResults[userId].includes(bigSmall)) {
+                userAllResults[userId].push(bigSmall);
+                if (userAllResults[userId].length > 20) {
+                  userAllResults[userId] = userAllResults[userId].slice(-20);
+                }
+              }
+            }
+          }
         }
-        
-        const data = gameType === "WINGO" ? (issueRes.data?.list || []) : (issueRes.data ? [issueRes.data.settled || {}] : []);
         
         // Process pending bets (ACTUAL BETS)
         if (userPendingBets[userId]) {
           for (const [period, betInfo] of Object.entries(userPendingBets[userId])) {
             const settled = data.find(item => item.issueNumber === period);
             if (settled && settled.number) {
+              // FIXED: Debug logging for WINGO_30S
+              if (gameType === "WINGO_30S") {
+                logging.debug(`WINGO_30S: Found result for period ${period}: ${settled.number}`);
+              }
+              
               const [betType, amount, isVirtual] = betInfo;
               const number = parseInt(settled.number || "0") % 10;
               const bigSmall = number >= 5 ? "B" : "S";
@@ -1088,7 +1290,7 @@ async function winLoseChecker(bot) {
               }
               
               // Store result for Lyzo strategy if using TRX
-              if (gameType === "TRX" && settings.strategy === "LYZO") {
+              if (settings.strategy === "LYZO") {
                 if (!userLast10Results[userId]) {
                   userLast10Results[userId] = [];
                 }
@@ -1372,10 +1574,10 @@ async function winLoseChecker(bot) {
               const botStopped = await checkProfitAndStopLoss(userId, bot);
               
               // Format result as requested: 🎯Result: 7 => Big
-              const resultText = `🎯Result: ${number} => ${bigSmall === 'B' ? 'Big' : 'Small'}`;
+              const resultText = `🎯 Result: ${number} => ${bigSmall === 'B' ? 'Big' : 'Small'}`;
               
               // Format ID based on game type
-              const gameId = gameType === "TRX" ? `🆔 TRX : ${period}` : `🆔 WINGO : ${period}`;
+              const gameId = `🆔 ${gameType} : ${period}`;
               
               let message;
               if (isWin) {
@@ -1465,6 +1667,11 @@ async function winLoseChecker(bot) {
           for (const [period, betInfo] of Object.entries(userSkippedBets[userId])) {
             const settled = data.find(item => item.issueNumber === period);
             if (settled && settled.number) {
+              // FIXED: Debug logging for WINGO_30S
+              if (gameType === "WINGO_30S") {
+                logging.debug(`WINGO_30S: Found result for skipped period ${period}: ${settled.number}`);
+              }
+              
               const [betType, isVirtual] = betInfo;
               const number = parseInt(settled.number || "0") % 10;
               const bigSmall = number >= 5 ? "B" : "S";
@@ -1504,7 +1711,7 @@ async function winLoseChecker(bot) {
               }
               
               // Store result for Lyzo strategy if using TRX
-              if (gameType === "TRX" && settings.strategy === "LYZO") {
+              if (settings.strategy === "LYZO") {
                 if (!userLast10Results[userId]) {
                   userLast10Results[userId] = [];
                 }
@@ -1693,10 +1900,10 @@ async function winLoseChecker(bot) {
               const entryLayer = settings.layer_limit || 1;
               
               // Format result as requested: 🎯Result: 7 => Big
-              const resultText = `🎯Result: ${number} => ${bigSmall === 'B' ? 'Big' : 'Small'}`;
+              const resultText = `🎯 Result: ${number} => ${bigSmall === 'B' ? 'Big' : 'Small'}`;
               
               // Format ID based on game type
-              const gameId = gameType === "TRX" ? `🆔 TRX : ${period}` : `🆔 WINGO : ${period}`;
+              const gameId = `🆔 ${gameType} : ${period}`;
               
               // Entry Layer logic for skipped bets - skip for Leslay strategy
               if (!isLeslayStrategy) {
@@ -2136,7 +2343,8 @@ async function bettingWorker(userId, ctx, bot) {
                      settings.strategy === "TREND_FOLLOW" ? "Trend Follow" :
                      settings.strategy === "ALTERNATE" ? "Alternate" :
                      settings.strategy === "SNIPER" ? "Leslay" :
-                     settings.strategy === "ALINKAR" ? "Alinkar" : settings.strategy;
+                     settings.strategy === "ALINKAR" ? "Alinkar" :
+                     settings.strategy === "MAY_BARANI" ? "May Barani" : settings.strategy;
 
   // Add BS/SB Wait information for TREND_FOLLOW strategy
   if (settings.strategy === "TREND_FOLLOW") {
@@ -2161,11 +2369,13 @@ async function bettingWorker(userId, ctx, bot) {
 
   const profitTargetText = settings.target_profit ? `${settings.target_profit} Ks` : "Not Set";
   const stopLossText = settings.stop_loss ? `${settings.stop_loss} Ks` : "Not Set";
+  const gameType = settings.game_type || "TRX"; // Get game type from settings
 
   // Show initial bot information
   const startMessage = 
     `👾 BOT STARTED\n\n` +
     `💳 Balance: ${currentBalance} Ks\n\n` +
+    `🎲 Game Type: ${gameType}\n` +
     `📚 Strategy: ${strategyText}\n` +
     `🕹 Betting Strategy: ${bettingStrategyText}\n\n` +
     `🏹 Profit Target: ${isLeslayStrategy ? "Disabled (Leslay Strategy)" : profitTargetText}\n` +
@@ -2262,35 +2472,19 @@ async function bettingWorker(userId, ctx, bot) {
         userBalanceWarnings[userId] = now;
       }
       
-      const gameType = settings.game_type || "WINGO";
-      
       // Get current issue
       let issueRes;
       try {
-        if (gameType === "WINGO") {
-          issueRes = await getNoaverageEmerdListRequest(session);
-          if (!issueRes || issueRes.code !== 0 || !issueRes.data || !issueRes.data.list || issueRes.data.list.length === 0) {
-            settings.consecutive_errors++;
-            if (settings.consecutive_errors >= MAX_CONSECUTIVE_ERRORS) {
-              await sendMessageWithRetry(ctx, `Too many consecutive errors (${MAX_CONSECUTIVE_ERRORS}). Stopping bot`);
-              settings.running = false;
-              break;
-            }
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            continue;
+        issueRes = await getGameIssueRequest(session, gameType);
+        if (!issueRes || issueRes.code !== 0) {
+          settings.consecutive_errors++;
+          if (settings.consecutive_errors >= MAX_CONSECUTIVE_ERRORS) {
+            await sendMessageWithRetry(ctx, `Too many consecutive errors (${MAX_CONSECUTIVE_ERRORS}). Stopping bot`);
+            settings.running = false;
+            break;
           }
-        } else {
-          issueRes = await getGameIssueRequest(session, gameType);
-          if (!issueRes || issueRes.code !== 0) {
-            settings.consecutive_errors++;
-            if (settings.consecutive_errors >= MAX_CONSECUTIVE_ERRORS) {
-              await sendMessageWithRetry(ctx, `Too many consecutive errors (${MAX_CONSECUTIVE_ERRORS}). Stopping bot`);
-              settings.running = false;
-              break;
-            }
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            continue;
-          }
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
         }
       } catch (error) {
         logging.error(`Error getting issue: ${error.message}`);
@@ -2309,22 +2503,14 @@ async function bettingWorker(userId, ctx, bot) {
       
       // Get current issue number
       let currentIssue;
-      if (gameType === "WINGO") {
-        const latestIssue = issueRes.data.list[0];
-        if (!latestIssue || !latestIssue.issueNumber) {
-          settings.consecutive_errors++;
-          if (settings.consecutive_errors >= MAX_CONSECUTIVE_ERRORS) {
-            await sendMessageWithRetry(ctx, `Too many consecutive errors (${MAX_CONSECUTIVE_ERRORS}). Stopping bot`);
-            settings.running = false;
-            break;
-          }
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          continue;
-        }
-        currentIssue = latestIssue.issueNumber;
+      const data = issueRes.data || {};
+      
+      if (gameType === "TRX") {
+        currentIssue = data.predraw?.issueNumber;
+      } else if (gameType === "WINGO_30S") {
+        currentIssue = data.issueNumber; // Wingo 30s uses the same field as WINGO 1min
       } else {
-        const data = issueRes.data || {};
-        currentIssue = gameType === "TRX" ? data.predraw?.issueNumber : data.issueNumber;
+        currentIssue = data.issueNumber; // Default WINGO 1min
       }
       
       if (!currentIssue || currentIssue === settings.last_issue) {
@@ -2395,12 +2581,15 @@ async function bettingWorker(userId, ctx, bot) {
         if (prediction) {
           ch = prediction.result;
         } else {
-          ch = Math.random() < 0.5 ? 'B' : 'S';
-          logging.warning("Babio prediction failed, using random prediction");
+          ch = 'B'; // Default to B instead of random
+          logging.warning("Babio prediction failed, using default B");
         }
       } else if (settings.strategy === "ALINKAR") {
         ch = getAlinkarPrediction(userId);
         logging.info(`ALINKAR strategy: Prediction is ${ch}`);
+      } else if (settings.strategy === "MAY_BARANI") {
+        ch = await getMayBaraniPrediction(userId);
+        logging.info(`MAY BARANI strategy: Prediction is ${ch}`);
       } else if (settings.strategy === "TREND_FOLLOW") {
         if (!settings.trend_state) {
           settings.trend_state = {
@@ -2447,15 +2636,15 @@ async function bettingWorker(userId, ctx, bot) {
           if (settings.trend_state.last_result !== null) {
             ch = settings.trend_state.last_result;
           } else {
-            ch = Math.random() < 0.5 ? 'B' : 'S';
+            ch = 'B'; // Default to B instead of random
           }
           logging.info(`TREND_FOLLOW strategy: Using ${ch} for recording (skip mode).`);
         } else {
           // Normal betting mode
           if (settings.trend_state.last_result === null) {
-            // First bet is random
-            ch = Math.random() < 0.5 ? 'B' : 'S';
-            logging.info(`TREND_FOLLOW strategy: First bet is random: ${ch}`);
+            // First bet is default B
+            ch = 'B';
+            logging.info(`TREND_FOLLOW strategy: First bet is default: ${ch}`);
           } else {
             // Bet follows the last result
             ch = settings.trend_state.last_result;
@@ -2506,7 +2695,7 @@ async function bettingWorker(userId, ctx, bot) {
           skipReason = "(BB/SS Wait)";
           // Use the ALTERNATE strategy (opposite of last result) for the bet choice
           if (settings.alternate_state.last_result === null) {
-            ch = Math.random() < 0.5 ? 'B' : 'S';
+            ch = 'B'; // Default to B
           } else {
             // Bet opposite to the last result (ALTERNATE strategy)
             ch = settings.alternate_state.last_result === 'B' ? 'S' : 'B';
@@ -2515,9 +2704,9 @@ async function bettingWorker(userId, ctx, bot) {
         } else {
           // Normal betting mode - ALTERNATE (opposite of last result)
           if (settings.alternate_state.last_result === null) {
-            // First bet is random
-            ch = Math.random() < 0.5 ? 'B' : 'S';
-            logging.info(`ALTERNATE strategy: First bet is random: ${ch}`);
+            // First bet is default B
+            ch = 'B';
+            logging.info(`ALTERNATE strategy: First bet is default: ${ch}`);
           } else {
             // Bet opposite to the last result
             ch = settings.alternate_state.last_result === 'B' ? 'S' : 'B';
@@ -2529,16 +2718,16 @@ async function bettingWorker(userId, ctx, bot) {
         if (prediction) {
           ch = prediction.result;
         } else {
-          ch = Math.random() < 0.5 ? 'B' : 'S';
-          logging.warning("AI prediction failed, using random prediction");
+          ch = 'B'; // Default to B instead of random
+          logging.warning("AI prediction failed, using default B");
         }
       } else if (settings.strategy === "LYZO") {
         const prediction = await getLyzoPrediction(userId, gameType);
         if (prediction) {
           ch = prediction.result;
         } else {
-          ch = Math.random() < 0.5 ? 'B' : 'S';
-          logging.warning("Lyzo prediction failed, using random prediction");
+          ch = 'B'; // Default to B instead of random
+          logging.warning("Lyzo prediction failed, using default B");
         }
       } else if (settings.strategy === "DREAM") {
         if (!settings.dream_state) {
@@ -2552,14 +2741,14 @@ async function bettingWorker(userId, ctx, bot) {
         const dreamState = settings.dream_state;
         
         if (dreamState.first_bet) {
-          ch = Math.random() < 0.5 ? 'B' : 'S';
-          logging.info(`DREAM strategy: First bet is random: ${ch}`);
+          ch = 'B'; // Default to B instead of random
+          logging.info(`DREAM strategy: First bet is default: ${ch}`);
         } else if (dreamState.current_pattern && dreamState.current_index < dreamState.current_pattern.length) {
           ch = dreamState.current_pattern[dreamState.current_index];
           logging.info(`DREAM strategy: Using pattern ${dreamState.current_pattern} at index ${dreamState.current_index}: ${ch}`);
         } else {
-          ch = Math.random() < 0.5 ? 'B' : 'S';
-          logging.warning("DREAM strategy pattern invalid, using random prediction");
+          ch = 'B'; // Default to B instead of random
+          logging.warning("DREAM strategy pattern invalid, using default B");
         }
       } else if (settings.strategy === "DREAM2") {
         const patternIndex = settings.pattern_index || 0;
@@ -2584,9 +2773,9 @@ async function bettingWorker(userId, ctx, bot) {
         }
         
         if (settings.leo_state.last_result === null) {
-          // First bet is random
-          ch = Math.random() < 0.5 ? 'B' : 'S';
-          logging.info(`LEO strategy: First bet is random: ${ch}`);
+          // First bet is default B
+          ch = 'B';
+          logging.info(`LEO strategy: First bet is default: ${ch}`);
         } else {
           // Use pattern based on last result
           const pattern = settings.leo_state.last_result === 'B' ? LEO_BIG_PATTERN : LEO_SMALL_PATTERN;
@@ -2594,10 +2783,9 @@ async function bettingWorker(userId, ctx, bot) {
           logging.info(`LEO strategy: Using ${settings.leo_state.last_result === 'B' ? 'BIG' : 'SMALL'} pattern at index ${settings.leo_state.pattern_index}: ${ch}`);
         }
       } else {
-        // Default to AI prediction if no strategy is set
-        const prediction = await getAIPrediction(userId, gameType);
-        ch = prediction.result;
-        logging.info(`Using default AI prediction: ${ch}`);
+        // Default to B instead of AI prediction
+        ch = 'B';
+        logging.info(`Using default B prediction`);
       }
       
       const selectType = getSelectMap(gameType)[ch];
@@ -2658,7 +2846,7 @@ async function bettingWorker(userId, ctx, bot) {
       const betEmoji = getBetIndexEmoji(settings);
       
       // Format ID based on game type
-      const gameId = gameType === "TRX" ? `🆔 TRX : ${currentIssue}` : `🆔 WINGO : ${currentIssue}`;
+      const gameId = `🆔 ${gameType} : ${currentIssue}`;
       
       if (shouldSkip) {
         // Format Skip Bet message as requested
@@ -2766,7 +2954,7 @@ async function bettingWorker(userId, ctx, bot) {
           const betResp = await placeBetRequest(session, currentIssue, selectType, unitAmount, betCount, gameType, parseInt(userId));
           
           if (betResp.error || betResp.code !== 0) {
-            await sendMessageWithRetry(ctx, `Bet error: ${betResp.msg || betResp.error}. Retrying...`);
+            await sendMessageWithRetry(ctx, `Bet error: ${betResp.msg || betResp.error}. ထိုးကြေးပိတ်သွားပါပြီ Retrying...`);
             await new Promise(resolve => setTimeout(resolve, 5000));
             continue;
           }
@@ -2909,7 +3097,7 @@ function makeMainKeyboard(loggedIn = false) {
     ["👾 Start", "🚧 Stop"],
     ["💎 Bet_Size", "🎮 Virtual/Real Mode"],
     ["🏹 Profit Target", "🔻 Stop Loss Limit"],
-    ["🎲 WINGO/TRX", "📚 Strategy"],
+    ["📚 Strategy", "🎲 Game Type"], // Added Game Type button
     ["🕹 Anti/Martingale", "💥 Bet_SL"],
     ["⛳ Entry Layer", "📂 Info"],
     ["🔐 Login Again"]  // Added Login Again button
@@ -2937,6 +3125,9 @@ function makeStrategyKeyboard() {
     [
       Markup.button.callback("🔫LESLAY", "strategy:SNIPER"),
       Markup.button.callback("🚬 ALINKAR", "strategy:ALINKAR")
+    ],
+    [
+      Markup.button.callback("🐰MAY BARANI", "strategy:MAY_BARANI")
     ]
   ]);
 }
@@ -2967,10 +3158,19 @@ function makeBettingStrategyKeyboard() {
   ]);
 }
 
+// Add this function to create a game type selection keyboard
 function makeGameTypeKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("WINGO", "game_type:WINGO")],
+    [Markup.button.callback("WINGO", "game_type:WINGO_SELECT")],
     [Markup.button.callback("TRX", "game_type:TRX")]
+  ]);
+}
+
+// Add this function to create WINGO sub-selection keyboard
+function makeWINGOSelectionKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("WINGO 1min", "game_type:WINGO")],
+    [Markup.button.callback("WINGO 30s", "game_type:WINGO_30S")]
   ]);
 }
 
@@ -3008,7 +3208,7 @@ async function checkUserAuthorized(ctx) {
     userSettings[userId] = {
       strategy: "AI_PREDICTION",
       betting_strategy: "Martingale",
-      game_type: "WINGO",
+      game_type: "TRX", // Default to TRX
       martin_index: 0,
       dalembert_units: 1,
       pattern_index: 0,
@@ -3045,7 +3245,7 @@ async function cmdStartHandler(ctx) {
     userSettings[userId] = {
       strategy: "AI_PREDICTION",
       betting_strategy: "Martingale",
-      game_type: "WINGO",
+      game_type: "TRX", // Default to TRX
       martin_index: 0,
       dalembert_units: 1,
       pattern_index: 0,
@@ -3154,6 +3354,49 @@ async function cmdShowIdHandler(ctx) {
   }
 }
 
+// New command handler for /users
+async function cmdUsersHandler(ctx) {
+  const userId = ctx.from.id;
+  if (userId !== ADMIN_ID) {
+    await sendMessageWithRetry(ctx, "Admin only!");
+    return;
+  }
+  
+  try {
+    // Get all Telegram user IDs who have active sessions (logged in users)
+    const telegramUserIds = Array.from(activeUsers);
+    
+    if (telegramUserIds.length === 0) {
+      await sendMessageWithRetry(ctx, "No active users found.");
+      return;
+    }
+    
+    // Format the list of users
+    let message = "📋 List of Active Users:\n\n";
+    
+    for (const telegramId of telegramUserIds) {
+      const userInfo = userGameInfo[telegramId];
+      const userName = userInfo?.nickname || userInfo?.username || "Unknown";
+      const gameUserId = userInfo?.user_id || "Not logged in";
+      const balance = userInfo?.balance || 0;
+      const isRunning = userSettings[telegramId]?.running || false;
+      
+      message += `👤 ${userName}\n`;
+      message += `   Telegram ID: ${telegramId}\n`;
+      message += `   Game ID: ${gameUserId}\n`;
+      message += `   Balance: ${balance.toFixed(2)} Ks\n`;
+      message += `   Status: ${isRunning ? '🟢 Running' : '🔴 Stopped'}\n\n`;
+    }
+    
+    message += `Total: ${telegramUserIds.length} active users`;
+    
+    await sendMessageWithRetry(ctx, message);
+  } catch (error) {
+    logging.error(`Error showing users: ${error.message}`);
+    await sendMessageWithRetry(ctx, "Error retrieving user list. Please try again later.");
+  }
+}
+
 // Fixed command handler for /send
 async function cmdSendHandler(ctx) {
   const userId = ctx.from.id;
@@ -3248,6 +3491,8 @@ async function callbackQueryHandler(ctx) {
         last_result: null
       };
       await sendMessageWithRetry(ctx, `Strategy set to: Babio`, makeMainKeyboard(true));
+    } else if (strategy === "MAY_BARANI") {
+      await sendMessageWithRetry(ctx, `Strategy set to: May Barani`, makeMainKeyboard(true));
     } else {
       await sendMessageWithRetry(ctx, `Strategy set to: ${strategy === "ALINKAR" ? "Alinkar" : strategy}`, makeMainKeyboard(true));
     }
@@ -3304,8 +3549,24 @@ async function callbackQueryHandler(ctx) {
     await safeDeleteMessage(ctx);
   } else if (data.startsWith("game_type:")) {
     const gameType = data.split(":")[1];
+    
+    // If WINGO_SELECT is selected, show WINGO sub-options
+    if (gameType === "WINGO_SELECT") {
+      await sendMessageWithRetry(ctx, "Select WINGO game type:", makeWINGOSelectionKeyboard());
+      await safeDeleteMessage(ctx);
+      return;
+    }
+    
     userSettings[userId].game_type = gameType;
-    await sendMessageWithRetry(ctx, `Game Type set to: ${gameType}`, makeMainKeyboard(true));
+    
+    let gameTypeDisplay = gameType;
+    if (gameType === "WINGO_30S") {
+      gameTypeDisplay = "WINGO 30s";
+    } else if (gameType === "WINGO") {
+      gameTypeDisplay = "WINGO 1min";
+    }
+    
+    await sendMessageWithRetry(ctx, `Game Type set to: ${gameTypeDisplay}`, makeMainKeyboard(true));
     // Safely delete the message
     await safeDeleteMessage(ctx);
   } else if (data.startsWith("entry_layer:")) {
@@ -3391,6 +3652,12 @@ async function textMessageHandler(ctx) {
   // Check for specific button texts directly - check BEFORE normalization
   if (rawText.includes("📂 Info") || rawText.includes("Info") || rawText.includes("INFO")) {
     await showUserStats(ctx, userId);
+    return;
+  }
+  
+  // Check for game type selection
+  if (rawText.includes("🎲 Game Type") || rawText.includes("Game Type") || rawText.includes("game type")) {
+    await sendMessageWithRetry(ctx, "Select Game Type:", makeGameTypeKeyboard());
     return;
   }
   
@@ -3485,7 +3752,7 @@ async function textMessageHandler(ctx) {
             userSettings[userId] = {
               strategy: "AI_PREDICTION",
               betting_strategy: "Martingale",
-              game_type: "WINGO",
+              game_type: "TRX", // Default to TRX
               martin_index: 0,
               dalembert_units: 1,
               pattern_index: 0,
@@ -3848,8 +4115,6 @@ async function textMessageHandler(ctx) {
       } else if (rawText.includes("🔻 Stop Loss Limit") || command === "STOPLOSSLIMIT") {
         userState[userId] = { state: "INPUT_STOP_LIMIT" };
         await sendMessageWithRetry(ctx, "🧫 Stoploss_Limit ထည့်ပါ 🧫\n\nနမူနာ: 10000", makeMainKeyboard(true));
-      } else if (rawText.includes("🎲 WINGO/TRX") || command === "WINGOTRX") {
-        await sendMessageWithRetry(ctx, "Select Game Type:", makeGameTypeKeyboard());
       } else if (rawText.includes("📚 Strategy") || command === "STRATEGY") {
         await sendMessageWithRetry(ctx, "Choose strategy:", makeStrategyKeyboard());
       } else if (rawText.includes("🕹 Anti/Martingale") || command === "ANTIMARTINGALE") {
@@ -3889,7 +4154,7 @@ async function showUserStats(ctx, userId) {
   const betSizes = settings.bet_sizes || [];
   const strategy = settings.strategy || "AI_PREDICTION";
   const bettingStrategy = settings.betting_strategy || "Martingale";
-  const gameType = settings.game_type || "WINGO";
+  const gameType = settings.game_type || "TRX"; // Get game type from settings
   const virtualMode = settings.virtual_mode || false;
   const profitTarget = settings.target_profit;
   const stopLoss = settings.stop_loss;
@@ -3915,7 +4180,8 @@ async function showUserStats(ctx, userId) {
                        strategy === "TREND_FOLLOW" ? "Trend Follow" :
                        strategy === "ALTERNATE" ? "Alternate" :
                        strategy === "SNIPER" ? "Leslay" :
-                       strategy === "ALINKAR" ? "Alinkar" : strategy;
+                       strategy === "ALINKAR" ? "Alinkar" :
+                       strategy === "MAY_BARANI" ? "May Barani" : strategy;
 
   // Only show bet order for BS ORDER Strategy
   let betOrder = "N/A (Only available for BS_ORDER Strategy)";
@@ -4016,8 +4282,9 @@ function main() {
   bot.start(cmdStartHandler);
   bot.command('allow', cmdAllowHandler);
   bot.command('remove', cmdRemoveHandler);
-  bot.command('showid', cmdShowIdHandler);  // Added new command handler
-  bot.command('send', cmdSendHandler);  // Added new command handler for sending messages to all users
+  bot.command('showid', cmdShowIdHandler);
+  bot.command('users', cmdUsersHandler);  // Added new command handler
+  bot.command('send', cmdSendHandler);
   bot.on('callback_query', callbackQueryHandler);
   bot.on('text', textMessageHandler);
   
@@ -4046,4 +4313,4 @@ function main() {
 
 if (require.main === module) {
   main();
-}
+        }
