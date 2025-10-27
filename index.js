@@ -580,6 +580,54 @@ async function getLyzoPrediction(userId, gameType) {
   }
 }
 
+// BEATRIX Strategy
+async function getBeatrixPrediction(userId, gameType) {
+  try {
+    if (!userSettings[userId]) {
+      userSettings[userId] = {};
+    }
+    
+    // Initialize BEATRIX state if not exists
+    if (!userSettings[userId].beatrix_state) {
+      userSettings[userId].beatrix_state = {
+        waiting_for_seven: true,
+        last_period_with_seven: null
+      };
+    }
+    
+    const beatrixState = userSettings[userId].beatrix_state;
+    
+    // If we're waiting for a 7, return null to indicate we should skip
+    if (beatrixState.waiting_for_seven) {
+      logging.info(`BEATRIX: Waiting for a result of 7`);
+      return { result: null, skip: true };
+    }
+    
+    // If we have a period with 7, check its last digit
+    if (beatrixState.last_period_with_seven) {
+      const lastDigit = parseInt(beatrixState.last_period_with_seven.slice(-1));
+      
+      // Determine prediction based on the mapping
+      let prediction;
+      if (lastDigit === 0 || lastDigit === 1 || lastDigit === 2 || lastDigit === 3 || lastDigit === 7) {
+        prediction = 'S'; // SMALL
+      } else {
+        prediction = 'B'; // BIG
+      }
+      
+      logging.info(`BEATRIX: Period ${beatrixState.last_period_with_seven} ends with ${lastDigit}, predicting ${prediction === 'B' ? 'BIG' : 'SMALL'}`);
+      return { result: prediction, skip: false };
+    }
+    
+    // Default case - wait for 7
+    logging.info(`BEATRIX: No period with 7 found, waiting`);
+    return { result: null, skip: true };
+  } catch (error) {
+    logging.error(`Error getting BEATRIX prediction: ${error}`);
+    return { result: null, skip: true };
+  }
+}
+
 function getValidDalembertBetAmount(unitSize, currentUnits, balance, minBet) {
   let amount = unitSize * currentUnits;
   
@@ -1310,6 +1358,29 @@ async function winLoseChecker(bot) {
                 userAllResults[userId] = userAllResults[userId].slice(-20);
               }
               
+              // BEATRIX strategy result processing
+              if (settings.strategy === "BEATRIX") {
+                if (!userSettings[userId].beatrix_state) {
+                  userSettings[userId].beatrix_state = {
+                    waiting_for_seven: true,
+                    last_period_with_seven: null
+                  };
+                }
+                
+                const beatrixState = userSettings[userId].beatrix_state;
+                
+                // Check if the result number is 7
+                if (number === 7) {
+                  beatrixState.waiting_for_seven = false;
+                  beatrixState.last_period_with_seven = period;
+                  logging.info(`BEATRIX: Found result 7 in period ${period}, ready to bet on next period`);
+                } else {
+                  // If not 7, we're waiting
+                  beatrixState.waiting_for_seven = true;
+                  logging.info(`BEATRIX: Result is ${number}, not 7, continuing to wait`);
+                }
+              }
+              
               // Update LEO strategy state
               if (settings.strategy === "LEO" && settings.leo_state) {
                 settings.leo_state.last_result = bigSmall;
@@ -1731,6 +1802,29 @@ async function winLoseChecker(bot) {
                 userAllResults[userId] = userAllResults[userId].slice(-20);
               }
               
+              // BEATRIX strategy result processing for skipped bets
+              if (settings.strategy === "BEATRIX") {
+                if (!userSettings[userId].beatrix_state) {
+                  userSettings[userId].beatrix_state = {
+                    waiting_for_seven: true,
+                    last_period_with_seven: null
+                  };
+                }
+                
+                const beatrixState = userSettings[userId].beatrix_state;
+                
+                // Check if the result number is 7
+                if (number === 7) {
+                  beatrixState.waiting_for_seven = false;
+                  beatrixState.last_period_with_seven = period;
+                  logging.info(`BEATRIX: Found result 7 in period ${period}, ready to bet on next period`);
+                } else {
+                  // If not 7, we're waiting
+                  beatrixState.waiting_for_seven = true;
+                  logging.info(`BEATRIX: Result is ${number}, not 7, continuing to wait`);
+                }
+              }
+              
               // Update TREND_FOLLOW strategy state
               if (settings.strategy === "TREND_FOLLOW" && settings.trend_state) {
                 settings.trend_state.last_result = bigSmall;
@@ -2071,19 +2165,25 @@ async function winLoseChecker(bot) {
                     sniperStatus = isWin ? "\n🎯 SNIPER: Win detected, resetting state" : "\n🎯 SNIPER: Loss, continuing sequence";
                   }
                   
+                  // Add BEATRIX status
+                  let beatrixStatus = "";
+                  if (settings.strategy === "BEATRIX" && settings.beatrix_state) {
+                    beatrixStatus = number === 7 ? "\n👑 BEATRIX: Found 7, ready to bet" : "\n👑 BEATRIX: Waiting for 7";
+                  }
+                  
                   const resultMessage = isWin ? 
                     `✅ WIN +0.00 Ks\n` +
                     `--------------------------\n`+
                     `${gameId}\n` +
                     `${resultText}\n` +
                     `💳 Balance: ${currentBalance?.toFixed(2) || '0.00'} Ks\n` +
-                    `📊 Total Profit: ${totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)} Ks${bsWaitStatus}${bbWaitStatus}${sniperStatus}` :
+                    `📊 Total Profit: ${totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)} Ks${bsWaitStatus}${bbWaitStatus}${sniperStatus}${beatrixStatus}` :
                     `❌ LOSE -0 Ks\n` +
                     `--------------------------\n`+
                     `${gameId}\n` +
                     `${resultText}\n` +
                     `💳 Balance: ${currentBalance?.toFixed(2) || '0.00'} Ks\n` +
-                    `📊 Total Profit: ${totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)} Ks${bsWaitStatus}${bbWaitStatus}${sniperStatus}`;
+                    `📊 Total Profit: ${totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)} Ks${bsWaitStatus}${bbWaitStatus}${sniperStatus}${beatrixStatus}`;
                   
                   try {
                     await bot.telegram.sendMessage(userId, resultMessage);
@@ -2098,19 +2198,25 @@ async function winLoseChecker(bot) {
                   sniperStatus = isWin ? "\n🎯 SNIPER: Win detected, resetting state" : "\n🎯 SNIPER: Loss, continuing sequence";
                 }
                 
+                // Add BEATRIX status for Leslay
+                let beatrixStatus = "";
+                if (settings.strategy === "BEATRIX" && settings.beatrix_state) {
+                  beatrixStatus = number === 7 ? "\n👑 BEATRIX: Found 7, ready to bet" : "\n👑 BEATRIX: Waiting for 7";
+                }
+                
                 const resultMessage = isWin ? 
                   `✅ WIN +0.00 Ks\n` +
                   `--------------------------\n`+
                   `${gameId}\n` +
                   `${resultText}\n` +
                   `💳 Balance: ${currentBalance?.toFixed(2) || '0.00'} Ks\n` +
-                  `📊 Total Profit: ${totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)} Ks${sniperStatus}` :
+                  `📊 Total Profit: ${totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)} Ks${sniperStatus}${beatrixStatus}` :
                   `❌ LOSE -0 Ks\n` +
                   `--------------------------\n`+
                   `${gameId}\n` +
                   `${resultText}\n` +
                   `💳 Balance: ${currentBalance?.toFixed(2) || '0.00'} Ks\n` +
-                  `📊 Total Profit: ${totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)} Ks${sniperStatus}`;
+                  `📊 Total Profit: ${totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)} Ks${sniperStatus}${beatrixStatus}`;
                 
                 try {
                   await bot.telegram.sendMessage(userId, resultMessage);
@@ -2277,6 +2383,15 @@ async function bettingWorker(userId, ctx, bot) {
     logging.info(`SNIPER strategy reset for user ${userId}`);
   }
   
+  // Initialize BEATRIX strategy state if using BEATRIX strategy
+  if (settings.strategy === "BEATRIX") {
+    settings.beatrix_state = {
+      waiting_for_seven: true,
+      last_period_with_seven: null
+    };
+    logging.info(`BEATRIX strategy initialized for user ${userId}`);
+  }
+  
   // Initialize AI strategy data
   if (settings.strategy === "AI_PREDICTION") {
     userAILast10Results[userId] = [];
@@ -2344,7 +2459,8 @@ async function bettingWorker(userId, ctx, bot) {
                      settings.strategy === "ALTERNATE" ? "Alternate" :
                      settings.strategy === "SNIPER" ? "Leslay" :
                      settings.strategy === "ALINKAR" ? "Alinkar" :
-                     settings.strategy === "MAY_BARANI" ? "May Barani" : settings.strategy;
+                     settings.strategy === "MAY_BARANI" ? "May Barani" :
+                     settings.strategy === "BEATRIX" ? "Beatrix" : settings.strategy;
 
   // Add BS/SB Wait information for TREND_FOLLOW strategy
   if (settings.strategy === "TREND_FOLLOW") {
@@ -2575,6 +2691,15 @@ async function bettingWorker(userId, ctx, bot) {
           skipReason = "(SNIPER: Wait and Get Ready for Snipe)";
           // Use a default value for ch (for recording)
           ch = "B";
+        }
+      } else if (settings.strategy === "BEATRIX") {
+        const prediction = await getBeatrixPrediction(userId, gameType);
+        if (prediction.skip) {
+          shouldSkip = true;
+          skipReason = "(BEATRIX: Waiting for result 7)";
+          ch = 'B'; // Default value for recording
+        } else {
+          ch = prediction.result;
         }
       } else if (settings.strategy === "BABIO") {
         const prediction = await getBabioPrediction(userId, gameType);
@@ -2940,6 +3065,15 @@ async function bettingWorker(userId, ctx, bot) {
           betMsg += `\n📍 Normal Bet: ${ch === 'B' ? 'BIG' : 'SMALL'}`;
         }
         
+        // Add BEATRIX status
+        if (settings.strategy === "BEATRIX" && settings.beatrix_state) {
+          const beatrixState = settings.beatrix_state;
+          if (beatrixState.last_period_with_seven) {
+            const lastDigit = parseInt(beatrixState.last_period_with_seven.slice(-1));
+            betMsg += `\n👑 BEATRIX: Period ${beatrixState.last_period_with_seven} ends with ${lastDigit}`;
+          }
+        }
+        
         await sendMessageWithRetry(ctx, betMsg);
         
         if (settings.virtual_mode) {
@@ -3028,6 +3162,11 @@ async function bettingWorker(userId, ctx, bot) {
       delete settings.sniper_state;
     }
     
+    // Clean up BEATRIX strategy data
+    if (settings.strategy === "BEATRIX") {
+      delete settings.beatrix_state;
+    }
+    
     // Calculate profit before resetting stats
     let totalProfit = 0;
     let balanceText = "";
@@ -3104,8 +3243,12 @@ function makeMainKeyboard(loggedIn = false) {
   ]).resize().oneTime(false);
 }
 
-function makeStrategyKeyboard() {
-  return Markup.inlineKeyboard([
+function makeStrategyKeyboard(userId = null) {
+  // Get game type from user settings if userId is provided
+  const gameType = userId && userSettings[userId] ? userSettings[userId].game_type || "TRX" : "TRX";
+  
+  // Base keyboard with all strategies
+  const keyboard = [
     [
       Markup.button.callback("📜 BS-Order", "strategy:BS_ORDER"),
       Markup.button.callback("📈 TREND_FOLLOW", "strategy:TREND_FOLLOW")
@@ -3127,9 +3270,21 @@ function makeStrategyKeyboard() {
       Markup.button.callback("🚬 ALINKAR", "strategy:ALINKAR")
     ],
     [
-      Markup.button.callback("🐰MAY BARANI", "strategy:MAY_BARANI")
+      Markup.button.callback("🐰MAY BARANI", "strategy:MAY_BARANI"),
+      Markup.button.callback("👑BEATRIX", "strategy:BEATRIX")
     ]
-  ]);
+  ];
+  
+  // If game type is TRX, remove LYZO and BEATRIX
+  if (gameType === "TRX") {
+    // Remove LYZO (row 2, button 0)
+    keyboard[2][0] = Markup.button.callback("🚫 Disabled", "strategy:disabled");
+    
+    // Remove BEATRIX (row 5, button 1)
+    keyboard[5][1] = Markup.button.callback("🚫 Disabled", "strategy:disabled");
+  }
+  
+  return Markup.inlineKeyboard(keyboard);
 }
 
 function makeBSWaitCountKeyboard() {
@@ -3460,6 +3615,13 @@ async function callbackQueryHandler(ctx) {
   
   if (data.startsWith("strategy:")) {
     const strategy = data.split(":")[1];
+    
+    if (strategy === "disabled") {
+      await sendMessageWithRetry(ctx, "This strategy is not available for TRX game.ဒီStrategyကိုသုံးဖို့ WINGOကိုရွေးပါ", makeMainKeyboard(true));
+      await safeDeleteMessage(ctx);
+      return;
+    }
+    
     userSettings[userId].strategy = strategy;
     
     if (strategy === "SNIPER") {
@@ -3474,6 +3636,13 @@ async function callbackQueryHandler(ctx) {
       } else {
         await sendMessageWithRetry(ctx, `Strategy set to: Leslay (SNIPER) with Martingale betting\n\nThe bot will stop after 2 successful sniper hits.`, makeMainKeyboard(true));
       }
+    } else if (strategy === "BEATRIX") {
+      // Initialize BEATRIX state
+      userSettings[userId].beatrix_state = {
+        waiting_for_seven: true,
+        last_period_with_seven: null
+      };
+      await sendMessageWithRetry(ctx, `Strategy set to: Beatrix\n\nSniper strategyဖြစ်နာမို့ Targetမတွေ့မချင်းစောင့်ပါမယ်`, makeMainKeyboard(true));
     } else if (strategy === "BS_ORDER") {
       // Set state for BS pattern input when user selects BS-Order strategy
       userState[userId] = { state: "INPUT_BS_PATTERN" };
@@ -3566,7 +3735,16 @@ async function callbackQueryHandler(ctx) {
       gameTypeDisplay = "WINGO 1min";
     }
     
-    await sendMessageWithRetry(ctx, `Game Type set to: ${gameTypeDisplay}`, makeMainKeyboard(true));
+    // Check if current strategy is LYZO or BEATRIX and game type is TRX
+    const currentStrategy = userSettings[userId].strategy;
+    if ((currentStrategy === "LYZO" || currentStrategy === "BEATRIX") && gameType === "TRX") {
+      // Reset to default strategy
+      userSettings[userId].strategy = "AI_PREDICTION";
+      await sendMessageWithRetry(ctx, `Game Type set to: ${gameTypeDisplay}\n\nNote: ${currentStrategy} strategy သည် TRXမှာအလုပ်မလုပ်ပါ Ai prediction ကိုပဲauto setလုပ်ပါမယ်.`, makeMainKeyboard(true));
+    } else {
+      await sendMessageWithRetry(ctx, `Game Type set to: ${gameTypeDisplay}`, makeMainKeyboard(true));
+    }
+    
     // Safely delete the message
     await safeDeleteMessage(ctx);
   } else if (data.startsWith("entry_layer:")) {
@@ -3985,6 +4163,15 @@ async function textMessageHandler(ctx) {
           logging.info(`SNIPER strategy reset for user ${userId}`);
         }
         
+        // Initialize BEATRIX strategy state if using BEATRIX strategy
+        if (settings.strategy === "BEATRIX") {
+          settings.beatrix_state = {
+            waiting_for_seven: true,
+            last_period_with_seven: null
+          };
+          logging.info(`BEATRIX strategy initialized for user ${userId}`);
+        }
+        
         // Initialize AI strategy data
         if (settings.strategy === "AI_PREDICTION") {
           userAILast10Results[userId] = [];
@@ -4067,6 +4254,10 @@ async function textMessageHandler(ctx) {
           delete settings.sniper_state;
         }
         
+        if (settings.strategy === "BEATRIX") {
+          delete settings.beatrix_state;
+        }
+        
         // Calculate profit before reset
         let totalProfit = 0;
         let balanceText = "";
@@ -4116,7 +4307,7 @@ async function textMessageHandler(ctx) {
         userState[userId] = { state: "INPUT_STOP_LIMIT" };
         await sendMessageWithRetry(ctx, "🧫 Stoploss_Limit ထည့်ပါ 🧫\n\nနမူနာ: 10000", makeMainKeyboard(true));
       } else if (rawText.includes("📚 Strategy") || command === "STRATEGY") {
-        await sendMessageWithRetry(ctx, "Choose strategy:", makeStrategyKeyboard());
+        await sendMessageWithRetry(ctx, "Choose strategy:", makeStrategyKeyboard(userId));
       } else if (rawText.includes("🕹 Anti/Martingale") || command === "ANTIMARTINGALE") {
         const settings = userSettings[userId] || {};
         
@@ -4181,7 +4372,8 @@ async function showUserStats(ctx, userId) {
                        strategy === "ALTERNATE" ? "Alternate" :
                        strategy === "SNIPER" ? "Leslay" :
                        strategy === "ALINKAR" ? "Alinkar" :
-                       strategy === "MAY_BARANI" ? "May Barani" : strategy;
+                       strategy === "MAY_BARANI" ? "May Barani" :
+                       strategy === "BEATRIX" ? "Beatrix" : strategy;
 
   // Only show bet order for BS ORDER Strategy
   let betOrder = "N/A (Only available for BS_ORDER Strategy)";
@@ -4313,4 +4505,4 @@ function main() {
 
 if (require.main === module) {
   main();
-        }
+}
